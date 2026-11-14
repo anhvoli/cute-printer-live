@@ -1,0 +1,201 @@
+/* Web-font slot: uncomment the line below and put your font there. A web-font
+   @import must come before the Tailwind import — an @import placed after any
+   other rule is a build error, and it is reported against a line number in the
+   expanded Tailwind output, far past the end of this file, so the message
+   cannot point you at the mistake. */
+@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+@import "tailwindcss-safe-area";
+
+@theme {
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+  --text-5xl: 48px;
+  --text-5xl--line-height: 52px;
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #f2f2f7;
+  --surface: #ffffff;
+  --text: #1c1c1e;
+  --dim: #6b7280;
+  --border: #e5e7eb;
+  --accent: #0f766e;
+  --radius: 12px;
+  --space-surface: var(--surface);
+  --space-surface-alt: var(--surface);
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f0f0f;
+    --surface: #1a1a1a;
+    --text: #f0f0f0;
+    --dim: #9ca3af;
+    --border: #2d2d2d;
+    --accent: #2dd4bf;
+  }
+}
+
+/* Phone tap targets: at least 32px tall. */
+@layer base {
+  button, [role="button"], select, summary, input:not([type="checkbox"], [type="radio"]) {
+    min-height: 2rem;
+  }
+}
+
+/* ---- Máy In Mini animations ---- */
+
+/* New banner message fades in with a gentle downward settle — no pop. */
+@keyframes banner-pop {
+  0% { opacity: 0; transform: translateY(-1.4cqw); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.banner-pop {
+  animation: banner-pop 480ms cubic-bezier(.25,.8,.3,1);
+  will-change: transform, opacity;
+}
+
+/* Freshly printed row: paper slides down, ink fades in. */
+@keyframes paper-row-in {
+  0% { opacity: 0; transform: translateY(-16px); filter: blur(2px) brightness(1.6); }
+  55% { opacity: 1; filter: blur(0) brightness(1.25); }
+  100% { opacity: 1; transform: translateY(0); filter: none; }
+}
+.paper-row-fresh {
+  animation: paper-row-in 700ms ease-out;
+}
+
+/* The whole paper nudges down as a new row lands. */
+@keyframes paper-slide {
+  0% { transform: translateY(-4px); }
+  100% { transform: translateY(0); }
+}
+.paper-slide {
+  animation: paper-slide 500ms ease-out;
+}
+
+/* Printer body vibrates gently while printing. */
+@keyframes printer-shake {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  20% { transform: translateX(-1.2px) rotate(-0.4deg); }
+  40% { transform: translateX(1.2px) rotate(0.4deg); }
+  60% { transform: translateX(-1px) rotate(-0.3deg); }
+  80% { transform: translateX(1px) rotate(0.3deg); }
+}
+.printer-shake {
+  animation: printer-shake 180ms linear infinite;
+}
+
+/* Warm glow at the paper slot while a row is printing. */
+@keyframes printing-glow {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+.printing-glow {
+  animation: printing-glow 550ms ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .banner-pop, .paper-row-fresh, .paper-slide, .printer-shake, .printing-glow {
+    animation: none;
+  }
+}
+
+/* ---- Sân khấu kiểu cũ (bản HTML): mắt mèo, rung máy in, mực in ---- */
+
+/* Chớp mắt thong thả khi máy nghỉ: mở lâu, nhắm nhanh một nhịp. */
+@keyframes stage-blink-idle {
+  0%, 91%, 100% { transform: scaleY(1); }
+  94% { transform: scaleY(0.07); }
+  97% { transform: scaleY(1); }
+}
+.stage-eye {
+  animation: stage-blink-idle 4.6s ease-in-out infinite;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+/* Chớp mắt nhanh liên tục trong lúc máy đang in. */
+@keyframes stage-blink-fast {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.07); }
+}
+.stage-eye-printing {
+  animation: stage-blink-fast 340ms ease-in-out infinite;
+}
+
+/* Nháy mắt khi có quà: mắt phải nhắm hẳn, mắt trái chớp nhanh theo. */
+@keyframes stage-wink {
+  0%, 100% { transform: scaleY(1); }
+  45%, 60% { transform: scaleY(0.05); }
+}
+.stage-eye-wink-r {
+  animation: stage-wink 480ms ease-in-out 3;
+}
+.stage-eye-wink-l {
+  animation: stage-blink-fast 480ms ease-in-out 3;
+}
+
+/* Máy in nhún êm (bobbing) trong lúc kéo giấy: chỉ nhún dọc thật nhẹ với
+   một thoáng nghiêng, không giật ngang. Lặp theo chu kỳ in 950ms chừng nào
+   máy còn đang in (áp lên lớp trong, lớp ngoài giữ căn giữa). */
+@keyframes stage-vibrate {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  30% { transform: translateY(0.38cqw) rotate(-0.18deg); }
+  55% { transform: translateY(0.12cqw) rotate(0deg); }
+  78% { transform: translateY(0.3cqw) rotate(0.15deg); }
+}
+.stage-vibrate {
+  animation: stage-vibrate 950ms cubic-bezier(.25,.8,.3,1) infinite;
+  will-change: transform;
+}
+
+/* Số đếm trong PRINT MENU nảy mềm khi tăng: phồng nhẹ rồi lắng xuống. */
+@keyframes stage-bump {
+  0% { transform: scale(1) translateY(0); }
+  35% { transform: scale(1.22) translateY(-0.3cqw); }
+  100% { transform: scale(1) translateY(0); }
+}
+.stage-bump {
+  animation: stage-bump 620ms cubic-bezier(.25,.8,.3,1);
+  display: inline-block;
+  will-change: transform;
+}
+
+/* Dòng mới “lên mực” dần khi giấy trượt ra khỏi khe máy in: mực đậm dần
+   kèm trượt nhẹ xuống theo nhịp trượt của cả tờ giấy (900ms). */
+@keyframes stage-ink-in {
+  0% { opacity: 0.08; transform: translateY(-0.7cqw); filter: brightness(1.35); }
+  45% { opacity: 0.6; filter: brightness(1.12); }
+  100% { opacity: 1; transform: translateY(0); filter: brightness(1); }
+}
+.stage-ink-in {
+  animation: stage-ink-in 900ms cubic-bezier(.25,.8,.3,1) both;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-eye, .stage-eye-printing, .stage-eye-wink-r, .stage-eye-wink-l,
+  .stage-vibrate, .stage-bump, .stage-ink-in {
+    animation: none;
+  }
+}
