@@ -62,6 +62,34 @@ npm run dev     # Vite ở http://localhost:5173, API ở http://localhost:3000
 > biệt — code tham chiếu của nó nằm ở `server/src/actions.ts`,
 > `server/src/schema.ts` và `drizzle/`, không dùng để chạy bản này.
 
+## Deploy lên online (chạy 24/7 từ repo GitHub)
+
+App cần server chạy liên tục (giữ kết nối TikTok LIVE + lưu `data.json`)
+nên **không deploy được lên Vercel/GitHub Pages** (serverless, mất kết nối
+và mất dữ liệu). Dùng Railway hoặc Render — cả hai đều deploy thẳng từ
+repo GitHub này, không cần sửa code:
+
+**Railway (khuyên dùng, đơn giản nhất):**
+
+1. Mở https://railway.app/new/template?template=https://github.com/anhvoli/cute-printer-live
+2. Đăng nhập Railway (bằng tài khoản GitHub) → Deploy.
+3. Railway tự `npm install` rồi chạy `npm start` (tự tải ảnh quà + tự
+   build trước khi mở server). Mở domain Railway cấp là chơi, Admin ở
+   `#/admin`.
+
+**Render (có free):**
+
+1. Mở https://dashboard.render.com → New → Web Service → chọn repo
+   `anhvoli/cute-printer-live` (file `render.yaml` trong repo đã khai sẵn
+   lệnh build/start).
+2. Deploy xong mở domain Render cấp. Lưu ý: gói free ngủ sau 15 phút
+   không ai vào — lúc đó kết nối TikTok rớt, vào lại link là server tỉnh
+   và nối lại được.
+
+Cả hai đều đọc biến môi trường `PORT` tự cấp. Nếu mạng server bị chặn
+ký tên TikTok thì thêm biến môi trường `EULER_API_KEY` (key miễn phí ở
+eulerstream.com) như mục "Kết nối TikTok LIVE thật" bên dưới.
+
 ## Mở các trang
 
 - Trang Game: mở app (mặc định, `#/game`)

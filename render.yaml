@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: cute-printer-live
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    plan: free
