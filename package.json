@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "prebuild": "node scripts/download-gift-images.mjs",
     "build": "vite build",
+    "prestart": "npm run build",
     "start": "node server/standalone/server.mjs",
     "typecheck": "tsc --noEmit -p client/tsconfig.json"
   },

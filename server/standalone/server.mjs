@@ -242,6 +242,17 @@ async function serveStatic(req, res, pathname) {
     });
     res.end(body);
   } catch {
+    if (file === path.join(DIST, "index.html")) {
+      // No built client yet (fresh clone without `npm run build`):
+      // explain in plain language instead of a bare JSON 404.
+      const html = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Cute Printer Live — chưa build</title></head><body style="font-family:sans-serif;max-width:560px;margin:40px auto;padding:0 16px"><h1>Chưa build xong client</h1><p>Server đã chạy, nhưng chưa có bản build của trang web (<code>client/dist/index.html</code>). Hãy chạy:</p><pre style="background:#f4f4f4;padding:12px;border-radius:8px">npm run build</pre><p>rồi mở lại trang này. (Chạy <code>npm start</code> bình thường sẽ tự build trước.)</p></body></html>`;
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Length": Buffer.byteLength(html),
+      });
+      res.end(html);
+      return;
+    }
     sendJson(res, 404, { error: "Not found" });
   }
 }

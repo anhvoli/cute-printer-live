@@ -26,14 +26,15 @@ TikTok LIVE).
 ```bash
 git clone https://github.com/anhvoli/cute-printer-live.git
 cd cute-printer-live
-
-# Tải ảnh thật của 4 món quà TikTok vào client/src/assets/
-# (Rose, Finger Heart, Doughnut, Love you so much — nguồn BeetGames,
-# xem scripts/download-gift-images.sh)
-bash scripts/download-gift-images.sh
-
 npm install
+npm start
 ```
+
+Chỉ cần 2 lệnh sau khi clone: `npm install` rồi `npm start` là chạy —
+`npm start` tự tải 4 ảnh quà TikTok thật (nếu chưa có) rồi tự build
+client trước khi mở server ở `http://localhost:3000`. Không cần chạy
+riêng `npm run build` hay script tải ảnh nữa (vẫn chạy riêng được nếu anh
+muốn: `npm run build`, `bash scripts/download-gift-images.sh`).
 
 ## Chạy
 
