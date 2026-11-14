@@ -103,6 +103,83 @@ export function AdminPage({
   const channels = state.channels;
   const active = channels.find((c) => c.isActive) ?? channels[0];
 
+  // --- khóa Admin: mở khóa cho tab hiện tại, đóng tab thì khóa lại
+  const [unlocked, setUnlocked] = useState(() => {
+    try {
+      return sessionStorage.getItem("cpl-admin-unlocked") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [passInput, setPassInput] = useState("");
+  const [passError, setPassError] = useState("");
+  const [passBusy, setPassBusy] = useState(false);
+
+  const submitUnlock = async () => {
+    if (!passInput || passBusy) return;
+    setPassBusy(true);
+    setPassError("");
+    try {
+      const res = await api.verifyAdminPass({ pass: passInput });
+      if (res.ok) {
+        try {
+          sessionStorage.setItem("cpl-admin-unlocked", "1");
+        } catch {
+          // bỏ qua nếu trình duyệt chặn sessionStorage
+        }
+        setUnlocked(true);
+        setPassInput("");
+      } else {
+        setPassError("Sai mật khẩu, thử lại nhé");
+      }
+    } catch {
+      setPassError("Không kiểm tra được mật khẩu — kiểm tra lại server nhé");
+    } finally {
+      setPassBusy(false);
+    }
+  };
+
+  // --- đổi mật khẩu Admin
+  const [oldPass, setOldPass] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
+  const [changeMsg, setChangeMsg] = useState<{
+    kind: "ok" | "err";
+    text: string;
+  } | null>(null);
+  const [changeBusy, setChangeBusy] = useState(false);
+
+  const submitChangePass = async () => {
+    if (changeBusy) return;
+    if (newPass.trim().length < 4) {
+      setChangeMsg({ kind: "err", text: "Mật khẩu mới ít nhất 4 ký tự nhé" });
+      return;
+    }
+    if (newPass !== confirmPass) {
+      setChangeMsg({
+        kind: "err",
+        text: "Mật khẩu mới nhập lại chưa khớp nhau",
+      });
+      return;
+    }
+    setChangeBusy(true);
+    setChangeMsg(null);
+    try {
+      await api.changeAdminPass({ oldPass, newPass: newPass.trim() });
+      setOldPass("");
+      setNewPass("");
+      setConfirmPass("");
+      setChangeMsg({ kind: "ok", text: "Đã đổi mật khẩu Admin ✓" });
+    } catch (e) {
+      setChangeMsg({
+        kind: "err",
+        text: e instanceof Error ? e.message : "Đổi mật khẩu chưa được",
+      });
+    } finally {
+      setChangeBusy(false);
+    }
+  };
+
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["state"] });
 
@@ -203,6 +280,56 @@ export function AdminPage({
       eventGift(v, gift, 1),
     ]);
   };
+
+  if (!unlocked) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-slate-950 px-4 py-10 text-slate-100">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-lg">
+          <h1 className="text-lg font-extrabold tracking-tight">
+            🔒 Admin — Máy In Mini Dễ Thương
+          </h1>
+          <p className="mt-1 text-sm text-slate-400">
+            Trang Admin chỉ dành cho chủ kênh. Nhập mật khẩu để tiếp tục nhé.
+          </p>
+          <label htmlFor="admin-pass" className={`${labelCls} mt-4`}>
+            Mật khẩu Admin
+          </label>
+          <input
+            id="admin-pass"
+            type="password"
+            value={passInput}
+            onChange={(e) => setPassInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submitUnlock();
+            }}
+            placeholder="Nhập mật khẩu Admin"
+            autoFocus
+            className={inputCls}
+          />
+          {passError && (
+            <p className="mt-2 text-sm font-semibold text-rose-400">
+              {passError}
+            </p>
+          )}
+          <button
+            type="button"
+            className={`${primaryBtn} mt-4 w-full`}
+            disabled={!passInput || passBusy}
+            onClick={submitUnlock}
+          >
+            {passBusy ? "Đang kiểm tra…" : "Mở khóa Admin"}
+          </button>
+          <button
+            type="button"
+            onClick={onBack}
+            className={`${ghostBtn} mt-3 w-full`}
+          >
+            ← Về trang Game
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-full bg-slate-950 text-slate-100">
@@ -610,6 +737,73 @@ export function AdminPage({
                 }}
               >
                 Lưu chữ
+              </button>
+            </section>
+
+            {/* Mật khẩu Admin */}
+            <section className={cardCls} aria-label="Mật khẩu Admin">
+              <h2 className="mb-3 text-base font-bold">🔒 Mật khẩu Admin</h2>
+              <p className="mb-3 text-sm text-slate-400">
+                Ai biết đường dẫn #/admin cũng phải nhập mật khẩu mới vào
+                được. Mật khẩu mặc định là <strong>admin123</strong> — đổi
+                ngay sau lần đầu mở khóa nhé.
+              </p>
+              <div className="grid gap-3">
+                <div>
+                  <label htmlFor="old-pass" className={labelCls}>
+                    Mật khẩu cũ
+                  </label>
+                  <input
+                    id="old-pass"
+                    type="password"
+                    value={oldPass}
+                    onChange={(e) => setOldPass(e.target.value)}
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="new-pass" className={labelCls}>
+                    Mật khẩu mới (ít nhất 4 ký tự)
+                  </label>
+                  <input
+                    id="new-pass"
+                    type="password"
+                    value={newPass}
+                    onChange={(e) => setNewPass(e.target.value)}
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="confirm-pass" className={labelCls}>
+                    Nhập lại mật khẩu mới
+                  </label>
+                  <input
+                    id="confirm-pass"
+                    type="password"
+                    value={confirmPass}
+                    onChange={(e) => setConfirmPass(e.target.value)}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              {changeMsg && (
+                <p
+                  className={`mt-2 text-sm font-semibold ${
+                    changeMsg.kind === "ok"
+                      ? "text-emerald-400"
+                      : "text-rose-400"
+                  }`}
+                >
+                  {changeMsg.text}
+                </p>
+              )}
+              <button
+                type="button"
+                className={`${primaryBtn} mt-3`}
+                disabled={!oldPass || !newPass || !confirmPass || changeBusy}
+                onClick={submitChangePass}
+              >
+                Đổi mật khẩu
               </button>
             </section>
 

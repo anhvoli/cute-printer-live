@@ -66,7 +66,10 @@ npm run dev     # Vite ở http://localhost:5173, API ở http://localhost:3000
 
 - Trang Game: mở app (mặc định, `#/game`)
 - Trang Admin: thêm `#/admin` vào cuối URL, ví dụ
-  `http://localhost:3000/#/admin`
+  `http://localhost:3000/#/admin` — trang Admin **khóa bằng mật khẩu**,
+  mật khẩu mặc định là `admin123`, đổi trong thẻ **Mật khẩu Admin** sau
+  khi mở khóa. Mật khẩu lưu ở server, không lộ qua API; đóng tab là khóa
+  lại, mở tab mới phải nhập lại.
 - Link cho TikTok LIVE Studio: lấy URL trang Game trong thẻ
   **Kết nối TikTok LIVE** ở trang Admin (nút **Sao chép link**), dán vào
   LIVE Studio làm nguồn trình duyệt 1080 x 1920.

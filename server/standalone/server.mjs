@@ -41,6 +41,9 @@ const settingsSchema = z.object({
   voice: z.enum(["female", "male"]),
   voiceRate: z.number(),
   stageName: z.string(),
+  // Mật khẩu Admin: có default nên data.json cũ (chưa có trường này)
+  // vẫn đọc được; client không bao giờ nhận mật khẩu này qua getState.
+  adminPass: z.string().min(4).max(64).default("admin123"),
 });
 const dataSchema = z.object({
   nextChannelId: z.number().int().positive(),
@@ -57,6 +60,7 @@ const DEFAULT_SETTINGS = {
   voice: "female",
   voiceRate: 1,
   stageName: "",
+  adminPass: "admin123",
 };
 
 function defaultData() {
@@ -116,7 +120,31 @@ function parseArgs(args, schema) {
 
 const actions = {
   async getState() {
-    return { channels: data.channels, settings: data.settings };
+    // Không bao giờ trả mật khẩu Admin về client.
+    const { adminPass: _adminPass, ...publicSettings } = data.settings;
+    return { channels: data.channels, settings: publicSettings };
+  },
+
+  // Kiểm tra mật khẩu Admin mà không tiết lộ mật khẩu thật.
+  async verifyAdminPass(args) {
+    const { pass } = parseArgs(args, z.object({ pass: z.string() }));
+    return { ok: pass === data.settings.adminPass };
+  },
+
+  async changeAdminPass(args) {
+    const { oldPass, newPass } = parseArgs(
+      args,
+      z.object({
+        oldPass: z.string(),
+        newPass: z.string().trim().min(4).max(64),
+      }),
+    );
+    if (oldPass !== data.settings.adminPass) {
+      fail("Mật khẩu cũ không đúng");
+    }
+    data.settings.adminPass = newPass;
+    await saveData();
+    return { ok: true };
   },
 
   async addChannel(args) {
@@ -179,7 +207,9 @@ const actions = {
 
   async updateSettings(args) {
     const settings = parseArgs(args, settingsSchema);
-    data.settings = settings;
+    // Mật khẩu Admin chỉ đổi qua changeAdminPass, không đổi qua đây:
+    // giữ nguyên mật khẩu đang lưu kể cả khi client gửi kèm trường này.
+    data.settings = { ...settings, adminPass: data.settings.adminPass };
     await saveData();
     return { ok: true };
   },

@@ -1,6 +1,8 @@
 // Standalone RPC client (no @hatch/space-sdk). POSTs {action, args} as JSON
-// to /api/actions and returns the typed response. Same six methods and the
+// to /api/actions and returns the typed response. Same methods and the
 // same request/response shapes as server/src/actions.ts (the Muse version).
+// Lưu ý: getState KHÔNG trả về mật khẩu Admin; mật khẩu chỉ được kiểm tra
+// qua verifyAdminPass và đổi qua changeAdminPass.
 
 export type ChannelStatus = "connected" | "waiting" | "disconnected";
 
@@ -60,6 +62,10 @@ export const api = {
     callAction<{ ok: true }>("deleteChannel", args),
   updateSettings: (args: Settings) =>
     callAction<{ ok: true }>("updateSettings", args),
+  verifyAdminPass: (args: { pass: string }) =>
+    callAction<{ ok: boolean }>("verifyAdminPass", args),
+  changeAdminPass: (args: { oldPass: string; newPass: string }) =>
+    callAction<{ ok: true }>("changeAdminPass", args),
 };
 
 // Helpers so call sites can do `ApiResponse<typeof api, "getState">` just
