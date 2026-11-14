@@ -305,6 +305,7 @@ export interface LiveEngine {
   autoRunning: boolean;
   autoProgress: { done: number; total: number } | null;
   enqueue: (ev: LiveEvent | LiveEvent[]) => void;
+  setViewers: (n: number) => void; // số người xem thật từ TikTok (SSE)
   startSim: () => void;
   stopSim: () => void;
   startAuto: (total: number) => void;
@@ -425,6 +426,13 @@ export function useLiveEngine(opts: {
     [processQueue],
   );
 
+  // Số người xem thật do TikTok báo về (sự kiện viewers qua SSE).
+  // Giả lập vẫn tự tăng viewers khi có người vào; hai nguồn cộng dồn
+  // theo cách riêng của chúng nên số này chỉ bị ghi đè khi TikTok báo về.
+  const setViewerCount = useCallback((n: number) => {
+    setViewers(Math.max(0, Math.floor(n)));
+  }, []);
+
   // Connected banner whenever the on-air channel changes.
   const channelRef = useRef("");
   useEffect(() => {
@@ -519,6 +527,7 @@ export function useLiveEngine(opts: {
     autoRunning: autoProgress !== null,
     autoProgress,
     enqueue,
+    setViewers: setViewerCount,
     startSim: () => setSimRunning(true),
     stopSim: () => setSimRunning(false),
     startAuto,

@@ -68,6 +68,39 @@ export const api = {
     callAction<{ ok: true }>("changeAdminPass", args),
 };
 
+// --- TikTok LIVE bridge (đi /api/tiktok/*, KHÔNG qua /api/actions) ---
+
+async function callTikTok<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data: { error?: unknown } = {};
+  try {
+    data = (await res.json()) as { error?: unknown };
+  } catch {
+    // giữ thông báo mặc định bên dưới
+  }
+  if (!res.ok) {
+    const message =
+      typeof data.error === "string" && data.error
+        ? data.error
+        : `TikTok request failed (${res.status})`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
+export const tiktokConnect = (channelId: number) =>
+  callTikTok<{ ok: boolean; roomId: string | null; viewerCount: number }>(
+    "/api/tiktok/connect",
+    { channelId },
+  );
+
+export const tiktokDisconnect = () =>
+  callTikTok<{ ok: boolean }>("/api/tiktok/disconnect", {});
+
 // Helpers so call sites can do `ApiResponse<typeof api, "getState">` just
 // like they did with the SDK client.
 export type ApiResponse<T, K extends keyof T> =

@@ -4,6 +4,11 @@
 // - Serves the built client from client/dist/ (run `npm run build` first).
 // - Implements POST /api/actions with the same six actions and the same
 //   request/response shapes as server/src/actions.ts (the Muse version).
+// - TikTok LIVE bridge: POST /api/tiktok/connect + /disconnect and
+//   GET /api/tiktok/stream (SSE) — one TikTok connection at a time, to the
+//   active channel. Real TikTok events (chat/gift/join/follow/like/viewers)
+//   are normalized and broadcast to every SSE subscriber. Simulation keeps
+//   working alongside; it never touches this bridge.
 // - Persists channels + settings in data.json at the repo root.
 //
 // Run: `npm start` (PORT env, default 3000).
@@ -14,11 +19,23 @@ import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import {
+  TikTokLiveConnection,
+  WebcastEvent,
+  ControlEvent,
+} from "tiktok-live-connector";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const DIST = path.join(ROOT, "client", "dist");
 const DATA_FILE = path.join(ROOT, "data.json");
 const PORT = Number(process.env.PORT || 3000);
+
+// Key miễn phí của EulerStream (máy chủ ký tên mà tiktok-live-connector
+// dùng để nối websocket). Mạng nhà thường không cần; mạng trung tâm dữ
+// liệu hay bị chặn ẩn danh thì cần key: đăng ký miễn phí ở
+// https://www.eulerstream.com rồi chạy EULER_API_KEY=xxx npm start.
+const EULER_API_KEY =
+  process.env.EULER_API_KEY || process.env.TIKTOK_SIGN_API_KEY || "";
 
 // ---------------------------------------------------------------------------
 // Validation (mirrors the zod schemas in server/src/actions.ts)
@@ -216,6 +233,368 @@ const actions = {
 };
 
 // ---------------------------------------------------------------------------
+// TikTok LIVE bridge (one connection at a time, to the active channel)
+// ---------------------------------------------------------------------------
+// TikTok has no official API for live chat/gifts; this uses the community
+// library tiktok-live-connector (same one the tiktok-printer-live reference
+// repo uses). It reads public live rooms — no TikTok login needed.
+
+const tik = {
+  channelId: null,
+  username: "",
+  connection: null,
+  roomId: null,
+  viewerCount: 0,
+  reconnectEnabled: false,
+  reconnectCount: 0,
+  reconnectWaitMs: 1000,
+  reconnectTimer: null,
+  manualDisconnect: false,
+};
+
+const sseClients = new Set();
+
+function tikStatus() {
+  return {
+    connected: tik.connection !== null && tik.roomId !== null,
+    channelId: tik.channelId,
+    username: tik.username,
+    roomId: tik.roomId,
+    viewerCount: tik.viewerCount,
+  };
+}
+
+function tikBroadcast(evt) {
+  const line = `data: ${JSON.stringify(evt)}\n\n`;
+  for (const res of [...sseClients]) {
+    try {
+      res.write(line);
+    } catch {
+      sseClients.delete(res);
+    }
+  }
+}
+
+async function tikSetChannelStatus(id, status) {
+  const ch = data.channels.find((c) => c.id === id);
+  if (ch) {
+    ch.status = status;
+    await saveData();
+  }
+}
+
+// The connector passes proto-decoded messages; the user is usually nested
+// under `user`, but fall back to top-level fields just in case.
+function tikUser(msg) {
+  const u = msg?.user ?? msg ?? {};
+  return {
+    name: u.nickname || u.uniqueId || "TikTok",
+    username: u.uniqueId || "",
+  };
+}
+
+function wireTikTokEvents(connection) {
+  const isCurrent = () => tik.connection === connection;
+
+  connection.on(WebcastEvent.CHAT, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      const u = tikUser(msg);
+      tikBroadcast({
+        type: "chat",
+        name: u.name,
+        username: u.username,
+        text: msg?.comment ?? "",
+      });
+    } catch (err) {
+      console.error("[tiktok] chat handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.GIFT, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      // Streakable gifts arrive once per repeat: only forward the final
+      // repeat (repeatEnd === 1) so one combo never prints many times.
+      // Non-streakable gifts have repeatEnd 1 (or missing) right away.
+      if (msg?.repeatEnd !== undefined && msg.repeatEnd !== 1) return;
+      const u = tikUser(msg);
+      const details = msg?.giftDetails ?? {};
+      tikBroadcast({
+        type: "gift",
+        name: u.name,
+        username: u.username,
+        giftName: details.giftName ?? msg?.giftName ?? "Quà TikTok",
+        giftId: msg?.giftId ?? 0,
+        diamondCount: details.diamondCount ?? msg?.diamondCount ?? 0,
+        count: Math.max(1, msg?.repeatCount || 1),
+        giftImageUrl:
+          details.giftImage?.giftPictureUrl ?? msg?.giftPictureUrl ?? "",
+      });
+    } catch (err) {
+      console.error("[tiktok] gift handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.MEMBER, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      const u = tikUser(msg);
+      tikBroadcast({ type: "join", name: u.name, username: u.username });
+    } catch (err) {
+      console.error("[tiktok] member handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.SOCIAL, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      if (!String(msg?.displayType ?? "").toLowerCase().includes("follow")) return;
+      const u = tikUser(msg);
+      tikBroadcast({ type: "follow", name: u.name, username: u.username });
+    } catch (err) {
+      console.error("[tiktok] social handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.LIKE, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      const u = tikUser(msg);
+      tikBroadcast({
+        type: "like",
+        name: u.name,
+        username: u.username,
+        count: Math.max(1, msg?.likeCount || 1),
+      });
+    } catch (err) {
+      console.error("[tiktok] like handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.ROOM_USER, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      const count = msg?.viewerCount;
+      if (typeof count === "number") {
+        tik.viewerCount = count;
+        tikBroadcast({ type: "viewers", count });
+      }
+    } catch (err) {
+      console.error("[tiktok] room_user handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.STREAM_END, () => {
+    try {
+      if (!isCurrent()) return;
+      console.log(`[tiktok] stream ended for @${tik.username}`);
+      tik.reconnectEnabled = false;
+      tik.roomId = null;
+      tik.viewerCount = 0;
+      tikBroadcast({ type: "streamEnd" });
+      if (tik.channelId) {
+        void tikSetChannelStatus(tik.channelId, "disconnected").then(() =>
+          tikBroadcast({ type: "status", ...tikStatus() }),
+        );
+      } else {
+        tikBroadcast({ type: "status", ...tikStatus() });
+      }
+    } catch (err) {
+      console.error("[tiktok] stream_end handler:", err);
+    }
+  });
+
+  connection.on(ControlEvent.DISCONNECTED, () => {
+    try {
+      if (!isCurrent()) return;
+      console.log(`[tiktok] disconnected from @${tik.username}`);
+      scheduleTikReconnect();
+    } catch (err) {
+      console.error("[tiktok] disconnected handler:", err);
+    }
+  });
+
+  connection.on(ControlEvent.ERROR, (err) => {
+    console.error(`[tiktok] connection error for @${tik.username}:`, err?.message ?? err);
+  });
+}
+
+function scheduleTikReconnect() {
+  if (!tik.reconnectEnabled || tik.manualDisconnect) return;
+  if (!tik.connection) return;
+  if (tik.reconnectCount >= 5) {
+    console.log("[tiktok] give up reconnecting after 5 attempts");
+    tik.reconnectEnabled = false;
+    tik.roomId = null;
+    if (tik.channelId) {
+      void tikSetChannelStatus(tik.channelId, "disconnected").then(() =>
+        tikBroadcast({ type: "status", ...tikStatus() }),
+      );
+    }
+    return;
+  }
+  const wait = tik.reconnectWaitMs;
+  tik.reconnectWaitMs *= 2;
+  tik.reconnectCount += 1;
+  console.log(`[tiktok] reconnecting in ${wait}ms (attempt ${tik.reconnectCount}/5)`);
+  tik.reconnectTimer = setTimeout(() => {
+    tik.reconnectTimer = null;
+    if (!tik.reconnectEnabled || tik.manualDisconnect || !tik.connection) return;
+    tik.connection
+      .connect()
+      .then((state) => {
+        tik.roomId = state?.roomId ?? null;
+        tik.reconnectCount = 0;
+        tik.reconnectWaitMs = 1000;
+        console.log(`[tiktok] reconnected to room ${tik.roomId}`);
+        if (tik.channelId) void tikSetChannelStatus(tik.channelId, "connected");
+        tikBroadcast({ type: "status", ...tikStatus() });
+      })
+      .catch(() => scheduleTikReconnect());
+  }, wait);
+}
+
+function tikFriendlyError(err, username) {
+  const msg = String(err?.message ?? err ?? "");
+  const name = err?.name ?? "";
+  const offline =
+    name === "UserOfflineError" ||
+    /offline|isn't online|is not online|not online|not live|no room|room not found|live has ended|user is not live|is not live/i.test(msg);
+  if (offline) {
+    const e = new Error(
+      `Kênh @${username} chưa live — mở live trên TikTok rồi bấm lại nhé`,
+    );
+    e.status = 400;
+    return e;
+  }
+  if (
+    name === "ConnectTimeoutError" ||
+    msg === "CONNECT_TIMEOUT" ||
+    /timeout/i.test(msg)
+  ) {
+    const e = new Error(
+      "Nối TikTok quá lâu — mạng chậm hoặc TikTok không trả lời, thử lại nhé",
+    );
+    e.status = 400;
+    return e;
+  }
+  if (/rate.?limit|429/i.test(msg)) {
+    const e = new Error(
+      "TikTok đang giới hạn kết nối — chờ vài phút rồi thử lại nhé",
+    );
+    e.status = 400;
+    return e;
+  }
+  if (/failed to retrieve room id/i.test(msg)) {
+    const e = new Error(
+      `Không tìm thấy kênh @${username} trên TikTok hoặc kênh chưa live — kiểm tra lại username rồi thử lại nhé`,
+    );
+    e.status = 400;
+    return e;
+  }
+  if (/anonymous access is not available|sign server|sign error/i.test(msg)) {
+    const e = new Error(
+      "TikTok chặn nối từ mạng này (máy chủ ký tên yêu cầu key) — lấy key miễn phí ở eulerstream.com rồi chạy lại với EULER_API_KEY=... npm start; trên mạng nhà anh có thể không cần key",
+    );
+    e.status = 400;
+    return e;
+  }
+  const e = new Error(
+    `Không nối được TikTok (@${username}): ${msg || "lỗi không rõ"} — kiểm tra mạng rồi thử lại nhé`,
+  );
+  e.status = 400;
+  return e;
+}
+
+async function disconnectTikTokInternal() {
+  tik.manualDisconnect = true;
+  tik.reconnectEnabled = false;
+  if (tik.reconnectTimer) {
+    clearTimeout(tik.reconnectTimer);
+    tik.reconnectTimer = null;
+  }
+  const conn = tik.connection;
+  tik.connection = null;
+  tik.roomId = null;
+  tik.viewerCount = 0;
+  if (conn) {
+    try {
+      conn.disconnect();
+    } catch {
+      // already gone
+    }
+  }
+}
+
+async function connectTikTok(channelId) {
+  const channel = data.channels.find((c) => c.id === channelId);
+  if (!channel) fail("Không tìm thấy kênh này");
+  if (
+    tik.connection &&
+    tik.channelId === channel.id &&
+    tik.roomId !== null
+  ) {
+    return {
+      ok: true,
+      roomId: tik.roomId,
+      viewerCount: tik.viewerCount,
+      already: true,
+    };
+  }
+  await disconnectTikTokInternal();
+  tik.manualDisconnect = false;
+  tik.reconnectEnabled = true;
+  tik.reconnectCount = 0;
+  tik.reconnectWaitMs = 1000;
+  tik.channelId = channel.id;
+  tik.username = channel.username;
+  const connection = new TikTokLiveConnection(
+    channel.username,
+    EULER_API_KEY ? { signApiKey: EULER_API_KEY } : {},
+  );
+  tik.connection = connection;
+  wireTikTokEvents(connection);
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("CONNECT_TIMEOUT")), 25000);
+  });
+  try {
+    const state = await Promise.race([connection.connect(), timeout]);
+    if (timer) clearTimeout(timer);
+    tik.roomId = state?.roomId ?? null;
+    tik.viewerCount =
+      typeof state?.viewerCount === "number" ? state.viewerCount : 0;
+    await tikSetChannelStatus(channel.id, "connected");
+    tikBroadcast({ type: "status", ...tikStatus() });
+    console.log(`[tiktok] connected to @${channel.username}, room ${tik.roomId}`);
+    return { ok: true, roomId: tik.roomId, viewerCount: tik.viewerCount };
+  } catch (err) {
+    if (timer) clearTimeout(timer);
+    tik.reconnectEnabled = false;
+    tik.roomId = null;
+    try {
+      connection.disconnect();
+    } catch {
+      // ignore
+    }
+    if (tik.connection === connection) tik.connection = null;
+    await tikSetChannelStatus(channel.id, "disconnected");
+    throw tikFriendlyError(err, channel.username);
+  }
+}
+
+async function disconnectTikTok() {
+  const channelId = tik.channelId;
+  await disconnectTikTokInternal();
+  if (channelId) await tikSetChannelStatus(channelId, "disconnected");
+  tik.channelId = null;
+  tik.username = "";
+  tikBroadcast({ type: "status", ...tikStatus() });
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // Static file serving (client/dist) + JSON API
 // ---------------------------------------------------------------------------
 
@@ -333,6 +712,58 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // --- TikTok LIVE bridge ---
+    if (pathname === "/api/tiktok/connect" && req.method === "POST") {
+      const raw = await readBody(req);
+      let payload = {};
+      try {
+        payload = JSON.parse(raw || "{}");
+      } catch {
+        sendJson(res, 400, { error: "Invalid JSON body" });
+        return;
+      }
+      try {
+        const result = await connectTikTok(payload.channelId);
+        sendJson(res, 200, result);
+      } catch (err) {
+        sendJson(res, err.status || 400, {
+          error: err.message || "Không nối được TikTok",
+        });
+      }
+      return;
+    }
+
+    if (pathname === "/api/tiktok/disconnect" && req.method === "POST") {
+      const result = await disconnectTikTok();
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (pathname === "/api/tiktok/stream" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      res.write(
+        `data: ${JSON.stringify({ type: "status", ...tikStatus() })}\n\n`,
+      );
+      sseClients.add(res);
+      const hb = setInterval(() => {
+        try {
+          res.write(": ping\n\n");
+        } catch {
+          // client gone; close handler cleans up
+        }
+      }, 20000);
+      req.on("close", () => {
+        clearInterval(hb);
+        sseClients.delete(res);
+      });
+      return;
+    }
+
     if (pathname.startsWith("/api/")) {
       sendJson(res, 404, { error: "Not found" });
       return;
@@ -354,4 +785,7 @@ server.listen(PORT, () => {
   console.log(`  Game:  http://localhost:${PORT}/#/game`);
   console.log(`  Admin: http://localhost:${PORT}/#/admin`);
   console.log(`  Data:  ${DATA_FILE}`);
+  console.log(
+    `  TikTok sign key: ${EULER_API_KEY ? "đã có (EULER_API_KEY)" : "chưa có — mạng nhà thường không cần, mạng bị chặn thì lấy key ở eulerstream.com"}`,
+  );
 });

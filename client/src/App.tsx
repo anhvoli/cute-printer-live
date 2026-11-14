@@ -3,10 +3,11 @@
 // both pages share — the Admin preview and simulations drive the same
 // printer the Game page shows.
 
-import { useCallback, useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
 import { useLiveEngine, speakText, type LiveEvent } from "./lib/live";
+import { subscribeTikTok, toLiveEvent } from "./lib/tiktok";
 import { GamePage } from "./pages/GamePage";
 import { AdminPage } from "./pages/AdminPage";
 
@@ -84,6 +85,30 @@ export function App() {
     giftSoundOn: settings.soundAll && settings.giftSound,
     onGiftPrinted,
   });
+
+  // TikTok thật qua SSE: đăng ký MỘT lần cho cả Game + Admin (engine dùng
+  // chung). Sự kiện viewers cập nhật số người xem; status/streamEnd thì
+  // tải lại state để badge kênh ở Admin đổi theo. Giả lập không bị ảnh
+  // hưởng — nó vẫn tự chạy và đẩy vào cùng engine.
+  const queryClient = useQueryClient();
+  const engineRef = useRef(engine);
+  engineRef.current = engine;
+  useEffect(() => {
+    const stop = subscribeTikTok((ev) => {
+      const eng = engineRef.current;
+      if (ev.type === "viewers") {
+        eng.setViewers(ev.count);
+        return;
+      }
+      if (ev.type === "status" || ev.type === "streamEnd") {
+        void queryClient.invalidateQueries({ queryKey: ["state"] });
+        return;
+      }
+      const liveEv = toLiveEvent(ev);
+      if (liveEv) eng.enqueue(liveEv);
+    });
+    return stop;
+  }, [queryClient]);
 
   if (state.isPending) {
     return (

@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type ApiResponse } from "../api";
+import { api, tiktokConnect, tiktokDisconnect, type ApiResponse } from "../api";
 import { PrinterStage } from "../components/PrinterStage";
 import {
 GIFTS,
@@ -188,11 +188,42 @@ export function AdminPage({
       api.addChannel(args),
     onSuccess: invalidate,
   });
-  const setStatus = useMutation({
-    mutationFn: (args: { id: number; status: Channel["status"] }) =>
-      api.setChannelStatus(args),
-    onSuccess: invalidate,
-  });
+  // --- nối TikTok thật (không phải giả lập): bấm Kết nối là server nối
+  // vào phòng live thật của kênh; Ngắt thì ngắt hẳn. Trạng thái kênh đổi
+  // theo kết quả thật từ server (kênh phải đang live mới nối được).
+  const [tikBusy, setTikBusy] = useState(false);
+  const [tikError, setTikError] = useState("");
+
+  const doTikConnect = async (id: number) => {
+    setTikBusy(true);
+    setTikError("");
+    try {
+      await tiktokConnect(id);
+      await invalidate();
+    } catch (e) {
+      setTikError(
+        e instanceof Error ? e.message : "Không nối được TikTok",
+      );
+    } finally {
+      setTikBusy(false);
+    }
+  };
+
+  const doTikDisconnect = async () => {
+    setTikBusy(true);
+    setTikError("");
+    try {
+      await tiktokDisconnect();
+      await invalidate();
+    } catch (e) {
+      setTikError(
+        e instanceof Error ? e.message : "Ngắt kết nối chưa được",
+      );
+    } finally {
+      setTikBusy(false);
+    }
+  };
+
   const setActive = useMutation({
     mutationFn: (id: number) => api.setActiveChannel({ id }),
     onSuccess: invalidate,
@@ -417,9 +448,8 @@ export function AdminPage({
                     <button
                       type="button"
                       className={dangerBtn}
-                      onClick={() =>
-                        setStatus.mutate({ id: active.id, status: "disconnected" })
-                      }
+                      disabled={tikBusy}
+                      onClick={doTikDisconnect}
                     >
                       Ngắt kết nối
                     </button>
@@ -427,11 +457,10 @@ export function AdminPage({
                     <button
                       type="button"
                       className={primaryBtn}
-                      onClick={() =>
-                        setStatus.mutate({ id: active.id, status: "connected" })
-                      }
+                      disabled={tikBusy}
+                      onClick={() => doTikConnect(active.id)}
                     >
-                      Kết nối
+                      {tikBusy ? "Đang nối TikTok…" : "Kết nối"}
                     </button>
                   )}
                   {active.status === "connected" && (
@@ -446,6 +475,16 @@ export function AdminPage({
                   Chưa có kênh nào — thêm kênh TikTok đầu tiên ở dưới nhé.
                 </p>
               )}
+              {tikError && (
+                <p className="mb-4 text-sm font-semibold text-rose-400">
+                  {tikError}
+                </p>
+              )}
+              <p className="mb-4 text-xs text-slate-400">
+                Bấm Kết nối là nối vào phòng live thật của kênh trên TikTok
+                (kênh phải đang live mới nối được). Giả lập bên dưới vẫn bấm
+                được cả khi đang nối TikTok thật.
+              </p>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
@@ -529,12 +568,8 @@ export function AdminPage({
                           <button
                             type="button"
                             className={ghostBtn}
-                            onClick={() =>
-                              setStatus.mutate({
-                                id: c.id,
-                                status: "disconnected",
-                              })
-                            }
+                            disabled={tikBusy}
+                            onClick={doTikDisconnect}
                           >
                             Ngắt
                           </button>
@@ -542,13 +577,14 @@ export function AdminPage({
                           <button
                             type="button"
                             className={ghostBtn}
-                            onClick={() =>
-                              setStatus.mutate({ id: c.id, status: "connected" })
-                            }
+                            disabled={tikBusy}
+                            onClick={() => doTikConnect(c.id)}
                           >
-                            {c.status === "waiting"
-                              ? "Kết nối"
-                              : "Kết nối lại"}
+                            {tikBusy
+                              ? "Đang nối…"
+                              : c.status === "waiting"
+                                ? "Kết nối"
+                                : "Kết nối lại"}
                           </button>
                         )}
                         <button

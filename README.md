@@ -74,6 +74,40 @@ npm run dev     # Vite ở http://localhost:5173, API ở http://localhost:3000
   **Kết nối TikTok LIVE** ở trang Admin (nút **Sao chép link**), dán vào
   LIVE Studio làm nguồn trình duyệt 1080 x 1920.
 
+## Kết nối TikTok LIVE thật
+
+Ngoài giả lập, app nối được vào phòng live thật trên TikTok:
+
+1. Thêm kênh TikTok ở trang Admin, bấm **Kết nối** — server nối vào
+   phòng live đang phát của kênh đó (kênh phải **đang live thật** mới nối
+   được; chưa live sẽ báo "Kênh @… chưa live — mở live trên TikTok rồi
+   bấm lại nhé").
+2. Sự kiện thật tự in lên sân khấu, chung với giả lập:
+   - Chat thật → in thành dòng chat trên giấy.
+   - Quà thật → in thẻ cảm ơn (tên quà + ảnh quà thật nếu có); 4 món
+     quen (Rose, Finger Heart, Doughnut, Love you so much) thì cộng vào
+     PRINT MENU như cũ. Quà lạ vẫn in thẻ cảm ơn nhưng **không** cộng vào
+     4 món của PRINT MENU.
+   - Người vào live → dòng "Đã tham gia vào Live!"; Follow → banner;
+     Tim → cộng tim; số người xem trên banner lấy theo số thật của phòng.
+3. Bấm **Ngắt kết nối** để ngắt. Hết live thì server tự ngắt, mất mạng
+   thì tự nối lại tối đa 5 lần. Giả lập bên dưới vẫn bấm được cả khi đang
+   nối TikTok thật.
+
+> **Lưu ý:** TikTok không có API chính thức cho live chat/quà — app dùng
+> thư viện cộng đồng `tiktok-live-connector` để đọc phòng live công khai,
+> không cần đăng nhập TikTok. TikTok có thể đổi hoặc chặn cách nối này
+> bất cứ lúc nào; lúc đó giả lập vẫn chạy bình thường. Một lúc chỉ nối
+> được một kênh.
+>
+> **Nếu bấm Kết nối mà báo "TikTok chặn nối từ mạng này":** máy chủ ký
+> tên (EulerStream) chặn truy cập ẩn danh từ một số mạng (hay gặp ở mạng
+> máy chủ/VPS). Cách xử lý: đăng ký key miễn phí ở
+> https://www.eulerstream.com rồi chạy
+> `EULER_API_KEY=<key-của-anh> npm start` (trên Windows PowerShell:
+> `$env:EULER_API_KEY="<key-của-anh>"; npm start`). Trên mạng nhà thường
+> không cần key.
+
 ## Cấu trúc
 
 ```
