@@ -76,21 +76,32 @@ npm run dev     # Vite ở http://localhost:5173, API ở http://localhost:3000
 
 ## Kết nối TikTok LIVE thật
 
-Ngoài giả lập, app nối được vào phòng live thật trên TikTok:
+Ngoài giả lập, app nối được vào phòng live thật trên TikTok. Cách nối và
+chuẩn hóa sự kiện lấy đúng theo **Thắp Sáng Bản Đồ** (đã chạy thật trên
+live): `new TikTokLiveConnection(username, { processInitialData: true,
+enableExtendedGiftInfo: false })`, hỏi `fetchIsLive()` trước khi nối,
+SSE named events, quà combo chỉ chuyển phần `repeatCount` mới (delta),
+comment lấy ở `data.content` (proto v3).
 
-1. Thêm kênh TikTok ở trang Admin, bấm **Kết nối** — server nối vào
-   phòng live đang phát của kênh đó (kênh phải **đang live thật** mới nối
-   được; chưa live sẽ báo "Kênh @… chưa live — mở live trên TikTok rồi
-   bấm lại nhé").
+1. Thêm kênh TikTok ở trang Admin, bấm **Kết nối** — server hỏi TikTok
+   trước: kênh **chưa live** thì báo ngay "TikTok báo tài khoản này CHƯA
+   LIVE. Bấm Phát trực tiếp trong LIVE Studio trước rồi mới kết nối"
+   (không treo ở "Đang nối"); kênh đang live thì nối trong tối đa 30 giây.
 2. Sự kiện thật tự in lên sân khấu, chung với giả lập:
    - Chat thật → in thành dòng chat trên giấy.
    - Quà thật → in thẻ cảm ơn (tên quà + ảnh quà thật nếu có); 4 món
      quen (Rose, Finger Heart, Doughnut, Love you so much) thì cộng vào
      PRINT MENU như cũ. Quà lạ vẫn in thẻ cảm ơn nhưng **không** cộng vào
-     4 món của PRINT MENU.
+     4 món của PRINT MENU. Quà combo (x5, x10...) chỉ in phần mới, không
+     in trùng.
    - Người vào live → dòng "Đã tham gia vào Live!"; Follow → banner;
      Tim → cộng tim; số người xem trên banner lấy theo số thật của phòng.
-3. Bấm **Ngắt kết nối** để ngắt. Hết live thì server tự ngắt, mất mạng
+3. Giọng đọc cảm ơn cũng theo luật Thắp Sáng: tên người tặng được làm
+   sạch bằng `speakableName` (tên có từ cấm thì đọc là "bạn", số đọc
+   thành chữ, tối đa 5 chữ) và `GiftThanker` chống spam — quà nhỏ của
+   cùng 1 người chỉ cảm ơn bằng giọng 1 lần mỗi 30 giây, quà to
+   (>= 99 xu) luôn cảm ơn. Thẻ cảm ơn thì vẫn in cho mọi món quà.
+4. Bấm **Ngắt kết nối** để ngắt. Hết live thì server tự ngắt, mất mạng
    thì tự nối lại tối đa 5 lần. Giả lập bên dưới vẫn bấm được cả khi đang
    nối TikTok thật.
 
@@ -117,6 +128,10 @@ client/                 React 19 + Tailwind CSS 4 (build bằng Vite)
   src/pages/AdminPage.tsx   Trang Admin — quản lý kênh, giọng đọc, giả lập
   src/components/PrinterStage.tsx   Sân khấu máy in + giấy in + PRINT MENU
   src/lib/live.ts       Engine live mô phỏng, bảng quà, hiệu ứng in
+  src/lib/tiktok.ts     Nghe SSE TikTok thật (named events kiểu Thắp Sáng)
+  src/lib/speakableName.ts  Tên TikTok -> tên cho giọng đọc (từ Thắp Sáng)
+  src/lib/bannedWords.ts    Từ cấm dùng cho speakableName (từ Thắp Sáng)
+  src/lib/chatter.ts    Luật cảm ơn quà GiftThanker + plain (từ Thắp Sáng)
   src/assets/           Ảnh thật 4 món quà TikTok (tải bằng script, xem dưới)
 server/
   standalone/server.mjs   Server Node.js: phục vụ client/dist + API /api/actions,

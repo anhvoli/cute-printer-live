@@ -4,11 +4,12 @@
 // - Serves the built client from client/dist/ (run `npm run build` first).
 // - Implements POST /api/actions with the same six actions and the same
 //   request/response shapes as server/src/actions.ts (the Muse version).
-// - TikTok LIVE bridge: POST /api/tiktok/connect + /disconnect and
-//   GET /api/tiktok/stream (SSE) — one TikTok connection at a time, to the
-//   active channel. Real TikTok events (chat/gift/join/follow/like/viewers)
-//   are normalized and broadcast to every SSE subscriber. Simulation keeps
-//   working alongside; it never touches this bridge.
+// - TikTok LIVE bridge: POST /api/tiktok/connect + /disconnect,
+//   GET /api/tiktok/status and GET /api/tiktok/stream (named SSE events)
+//   — one TikTok connection at a time, to the active channel. Real TikTok
+//   events (chat/gift/member/follow/share/like/roomUser) are normalized
+//   Thắp Sáng-style and broadcast to every SSE subscriber. Simulation
+//   keeps working alongside; it never touches this bridge.
 // - Persists channels + settings in data.json at the repo root.
 //
 // Run: `npm start` (PORT env, default 3000).
@@ -238,6 +239,14 @@ const actions = {
 // TikTok has no official API for live chat/gifts; this uses the community
 // library tiktok-live-connector (same one the tiktok-printer-live reference
 // repo uses). It reads public live rooms — no TikTok login needed.
+//
+// Cách nối + chuẩn hóa sự kiện lấy đúng theo Thắp Sáng Bản Đồ
+// (~/workspace/thap-sang-ban-do/server.ts — đã chạy thật trên live):
+// new TikTokLiveConnection(username, { processInitialData: true,
+// enableExtendedGiftInfo: false }), fetchIsLive() hỏi trước khi nối,
+// named SSE events (chat/gift/member/follow/share/like/roomUser/status),
+// quà combo chỉ chuyển phần repeatCount mới (delta), comment lấy ở
+// data.content (proto v3).
 
 const tik = {
   channelId: null,
@@ -245,30 +254,44 @@ const tik = {
   connection: null,
   roomId: null,
   viewerCount: 0,
+  totalLikes: 0,
+  isConnecting: false,
+  error: "",
   reconnectEnabled: false,
   reconnectCount: 0,
   reconnectWaitMs: 1000,
   reconnectTimer: null,
   manualDisconnect: false,
+  // Quà combo: TikTok gửi lại repeatCount cộng dồn — nhớ tổng đã chuyển
+  // của từng (username, giftId) để chỉ chuyển phần mới (delta).
+  streakCounts: new Map(),
 };
 
 const sseClients = new Set();
 
+// Trạng thái live kiểu Thắp Sáng (liveStats): client nghe event `status`
+// để biết đang nối / đã nối / lỗi gì. Giữ thêm `connected` + `channelId`
+// cho tương thích với client cũ của máy in.
 function tikStatus() {
+  const isConnected = tik.connection !== null && tik.roomId !== null;
   return {
-    connected: tik.connection !== null && tik.roomId !== null,
+    isConnected,
+    isConnecting: tik.isConnecting,
+    connected: isConnected,
     channelId: tik.channelId,
     username: tik.username,
     roomId: tik.roomId,
     viewerCount: tik.viewerCount,
+    totalLikes: tik.totalLikes,
+    error: tik.error,
   };
 }
 
-function tikBroadcast(evt) {
-  const line = `data: ${JSON.stringify(evt)}\n\n`;
+function tikBroadcast(eventType, data) {
+  const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of [...sseClients]) {
     try {
-      res.write(line);
+      res.write(payload);
     } catch {
       sseClients.delete(res);
     }
@@ -283,105 +306,76 @@ async function tikSetChannelStatus(id, status) {
   }
 }
 
-// The connector passes proto-decoded messages; the user is usually nested
-// under `user`, but fall back to top-level fields just in case.
-function tikUser(msg) {
-  const u = msg?.user ?? msg ?? {};
-  return {
-    name: u.nickname || u.uniqueId || "TikTok",
-    username: u.uniqueId || "",
-  };
+// Đọc dữ liệu TikTok (proto v3) — đúng như Thắp Sáng.
+const userOf = (data) =>
+  data?.user?.displayId || data?.user?.uniqueId || data?.uniqueId || "nguoi-xem";
+const nickOf = (data) =>
+  data?.user?.nickname || data?.nickname || data?.uniqueId || "Bạn";
+const avatarOf = (data) => data?.user?.avatarThumb?.urlList?.[0] || "";
+
+// Lỗi từ thư viện thường là object {info, exception} chứ không phải
+// Error — rút thông báo thật ra, đừng để "[object Object]".
+function tikErrMessage(err) {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object") {
+    const info = err.info ?? err.message ?? "";
+    const exc =
+      err.exception instanceof Error
+        ? err.exception.message
+        : err.exception
+          ? String(err.exception)
+          : "";
+    const combined = [info, exc].filter(Boolean).join(": ");
+    if (combined) return combined;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
+  }
+  return String(err);
 }
 
-function wireTikTokEvents(connection) {
+function wireTikTokEvents(connection, opts) {
   const isCurrent = () => tik.connection === connection;
+  // Lỗi trong lúc đang nối lần đầu: báo ngay cho connectTikTok để fail
+  // nhanh thay vì treo tới hết 30s timeout.
+  const onConnectError = opts?.onError;
 
-  connection.on(WebcastEvent.CHAT, (msg) => {
+  connection.on(ControlEvent.CONNECTED, (state) => {
     try {
-      if (!isCurrent() || !tik.roomId) return;
-      const u = tikUser(msg);
-      tikBroadcast({
-        type: "chat",
-        name: u.name,
-        username: u.username,
-        text: msg?.comment ?? "",
-      });
+      if (!isCurrent()) return;
+      console.log(`[tiktok] Đã kết nối @${tik.username}, room ${state?.roomId}`);
+      tik.roomId = state?.roomId ?? tik.roomId;
+      tik.isConnecting = false;
+      tik.error = "";
+      tikBroadcast("status", tikStatus());
     } catch (err) {
-      console.error("[tiktok] chat handler:", err);
+      console.error("[tiktok] connected handler:", err);
     }
   });
 
-  connection.on(WebcastEvent.GIFT, (msg) => {
+  connection.on(ControlEvent.DISCONNECTED, () => {
     try {
-      if (!isCurrent() || !tik.roomId) return;
-      // Streakable gifts arrive once per repeat: only forward the final
-      // repeat (repeatEnd === 1) so one combo never prints many times.
-      // Non-streakable gifts have repeatEnd 1 (or missing) right away.
-      if (msg?.repeatEnd !== undefined && msg.repeatEnd !== 1) return;
-      const u = tikUser(msg);
-      const details = msg?.giftDetails ?? {};
-      tikBroadcast({
-        type: "gift",
-        name: u.name,
-        username: u.username,
-        giftName: details.giftName ?? msg?.giftName ?? "Quà TikTok",
-        giftId: msg?.giftId ?? 0,
-        diamondCount: details.diamondCount ?? msg?.diamondCount ?? 0,
-        count: Math.max(1, msg?.repeatCount || 1),
-        giftImageUrl:
-          details.giftImage?.giftPictureUrl ?? msg?.giftPictureUrl ?? "",
-      });
+      if (!isCurrent()) return;
+      console.log(`[tiktok] Mất kết nối @${tik.username}`);
+      tik.isConnecting = false;
+      tikBroadcast("status", tikStatus());
+      scheduleTikReconnect();
     } catch (err) {
-      console.error("[tiktok] gift handler:", err);
+      console.error("[tiktok] disconnected handler:", err);
     }
   });
 
-  connection.on(WebcastEvent.MEMBER, (msg) => {
+  connection.on(ControlEvent.ERROR, (err) => {
     try {
-      if (!isCurrent() || !tik.roomId) return;
-      const u = tikUser(msg);
-      tikBroadcast({ type: "join", name: u.name, username: u.username });
-    } catch (err) {
-      console.error("[tiktok] member handler:", err);
-    }
-  });
-
-  connection.on(WebcastEvent.SOCIAL, (msg) => {
-    try {
-      if (!isCurrent() || !tik.roomId) return;
-      if (!String(msg?.displayType ?? "").toLowerCase().includes("follow")) return;
-      const u = tikUser(msg);
-      tikBroadcast({ type: "follow", name: u.name, username: u.username });
-    } catch (err) {
-      console.error("[tiktok] social handler:", err);
-    }
-  });
-
-  connection.on(WebcastEvent.LIKE, (msg) => {
-    try {
-      if (!isCurrent() || !tik.roomId) return;
-      const u = tikUser(msg);
-      tikBroadcast({
-        type: "like",
-        name: u.name,
-        username: u.username,
-        count: Math.max(1, msg?.likeCount || 1),
-      });
-    } catch (err) {
-      console.error("[tiktok] like handler:", err);
-    }
-  });
-
-  connection.on(WebcastEvent.ROOM_USER, (msg) => {
-    try {
-      if (!isCurrent() || !tik.roomId) return;
-      const count = msg?.viewerCount;
-      if (typeof count === "number") {
-        tik.viewerCount = count;
-        tikBroadcast({ type: "viewers", count });
-      }
-    } catch (err) {
-      console.error("[tiktok] room_user handler:", err);
+      const msg = tikErrMessage(err);
+      console.warn(`[tiktok] Lỗi @${tik.username}:`, msg);
+      tik.error = msg;
+      tikBroadcast("status", tikStatus());
+      onConnectError?.(err);
+    } catch (e) {
+      console.error("[tiktok] error handler:", e);
     }
   });
 
@@ -392,31 +386,150 @@ function wireTikTokEvents(connection) {
       tik.reconnectEnabled = false;
       tik.roomId = null;
       tik.viewerCount = 0;
-      tikBroadcast({ type: "streamEnd" });
+      tik.isConnecting = false;
+      tik.error = "Phiên live đã kết thúc";
       if (tik.channelId) {
         void tikSetChannelStatus(tik.channelId, "disconnected").then(() =>
-          tikBroadcast({ type: "status", ...tikStatus() }),
+          tikBroadcast("status", tikStatus()),
         );
       } else {
-        tikBroadcast({ type: "status", ...tikStatus() });
+        tikBroadcast("status", tikStatus());
       }
     } catch (err) {
       console.error("[tiktok] stream_end handler:", err);
     }
   });
 
-  connection.on(ControlEvent.DISCONNECTED, () => {
+  connection.on(WebcastEvent.CHAT, (msg) => {
     try {
-      if (!isCurrent()) return;
-      console.log(`[tiktok] disconnected from @${tik.username}`);
-      scheduleTikReconnect();
+      if (!isCurrent() || !tik.roomId) return;
+      tikBroadcast("chat", {
+        username: userOf(msg),
+        nickname: nickOf(msg),
+        comment: msg?.content || msg?.comment || "", // proto v3: chữ nằm ở `content`
+        avatar: avatarOf(msg),
+        timestamp: Date.now(),
+      });
     } catch (err) {
-      console.error("[tiktok] disconnected handler:", err);
+      console.error("[tiktok] chat handler:", err);
     }
   });
 
-  connection.on(ControlEvent.ERROR, (err) => {
-    console.error(`[tiktok] connection error for @${tik.username}:`, err?.message ?? err);
+  // TikTok gửi lại quà combo với repeatCount cộng dồn; chỉ chuyển phần mới.
+  connection.on(WebcastEvent.GIFT, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      const username = userOf(msg);
+      const giftId = msg?.giftId || 0;
+      const key = `${username}_${giftId}`;
+      const total = msg?.repeatCount || 1;
+      const delta = total - (tik.streakCounts.get(key) || 0);
+      const isStreakable =
+        (msg?.gift?.type ??
+          msg?.giftDetails?.giftType ??
+          msg?.giftType) === 1;
+      if (isStreakable && !msg?.repeatEnd) tik.streakCounts.set(key, total);
+      else tik.streakCounts.delete(key);
+      if (delta <= 0) return;
+
+      tikBroadcast("gift", {
+        username,
+        nickname: nickOf(msg),
+        giftName:
+          msg?.gift?.name ||
+          msg?.giftDetails?.giftName ||
+          msg?.giftName ||
+          "Quà",
+        giftId,
+        diamondCount:
+          msg?.gift?.diamondCount ||
+          msg?.diamondCount ||
+          msg?.giftDetails?.diamondCount ||
+          1,
+        repeatCount: delta,
+        // Ảnh thật của quà (quà lạ in thẻ cảm ơn vẫn có ảnh); không có thì "".
+        giftImageUrl:
+          msg?.giftDetails?.giftImage?.giftPictureUrl ||
+          msg?.gift?.image?.urlList?.[0] ||
+          msg?.giftPictureUrl ||
+          "",
+        avatar: avatarOf(msg),
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.error("[tiktok] gift handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.MEMBER, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      tikBroadcast("member", {
+        username: userOf(msg),
+        nickname: nickOf(msg),
+        avatar: avatarOf(msg),
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.error("[tiktok] member handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.FOLLOW, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      tikBroadcast("follow", {
+        username: userOf(msg),
+        nickname: nickOf(msg),
+        avatar: avatarOf(msg),
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.error("[tiktok] follow handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.SHARE, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      tikBroadcast("share", {
+        username: userOf(msg),
+        nickname: nickOf(msg),
+        avatar: avatarOf(msg),
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      console.error("[tiktok] share handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.ROOM_USER, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      if (typeof msg?.viewerCount === "number") {
+        tik.viewerCount = msg.viewerCount;
+        tikBroadcast("roomUser", { viewerCount: msg.viewerCount });
+      }
+    } catch (err) {
+      console.error("[tiktok] room_user handler:", err);
+    }
+  });
+
+  connection.on(WebcastEvent.LIKE, (msg) => {
+    try {
+      if (!isCurrent() || !tik.roomId) return;
+      if (typeof msg?.totalLikeCount === "number") {
+        tik.totalLikes = msg.totalLikeCount;
+      }
+      tikBroadcast("like", {
+        username: userOf(msg),
+        nickname: nickOf(msg),
+        likeCount: msg?.likeCount || 1,
+        totalLikes: tik.totalLikes,
+      });
+    } catch (err) {
+      console.error("[tiktok] like handler:", err);
+    }
   });
 }
 
@@ -427,10 +540,13 @@ function scheduleTikReconnect() {
     console.log("[tiktok] give up reconnecting after 5 attempts");
     tik.reconnectEnabled = false;
     tik.roomId = null;
+    tik.isConnecting = false;
     if (tik.channelId) {
       void tikSetChannelStatus(tik.channelId, "disconnected").then(() =>
-        tikBroadcast({ type: "status", ...tikStatus() }),
+        tikBroadcast("status", tikStatus()),
       );
+    } else {
+      tikBroadcast("status", tikStatus());
     }
     return;
   }
@@ -449,15 +565,24 @@ function scheduleTikReconnect() {
         tik.reconnectWaitMs = 1000;
         console.log(`[tiktok] reconnected to room ${tik.roomId}`);
         if (tik.channelId) void tikSetChannelStatus(tik.channelId, "connected");
-        tikBroadcast({ type: "status", ...tikStatus() });
+        tikBroadcast("status", tikStatus());
       })
       .catch(() => scheduleTikReconnect());
   }, wait);
 }
 
 function tikFriendlyError(err, username) {
-  const msg = String(err?.message ?? err ?? "");
+  const msg = tikErrMessage(err);
   const name = err?.name ?? "";
+  // Thông báo của Thắp Sáng: giữ nguyên, không bọc thêm chữ.
+  if (
+    msg.startsWith("TikTok báo tài khoản này CHƯA LIVE") ||
+    msg.startsWith("quá 30 giây không vào được phòng live")
+  ) {
+    const e = new Error(msg);
+    e.status = 400;
+    return e;
+  }
   const offline =
     name === "UserOfflineError" ||
     /offline|isn't online|is not online|not online|not live|no room|room not found|live has ended|user is not live|is not live/i.test(msg);
@@ -518,6 +643,10 @@ async function disconnectTikTokInternal() {
   tik.connection = null;
   tik.roomId = null;
   tik.viewerCount = 0;
+  tik.totalLikes = 0;
+  tik.isConnecting = false;
+  tik.error = "";
+  tik.streakCounts.clear();
   if (conn) {
     try {
       conn.disconnect();
@@ -549,37 +678,72 @@ async function connectTikTok(channelId) {
   tik.reconnectWaitMs = 1000;
   tik.channelId = channel.id;
   tik.username = channel.username;
-  const connection = new TikTokLiveConnection(
-    channel.username,
-    EULER_API_KEY ? { signApiKey: EULER_API_KEY } : {},
-  );
+  tik.isConnecting = true;
+  tik.error = "";
+  tik.streakCounts.clear();
+  tikBroadcast("status", tikStatus());
+
+  // Tạo kết nối ĐÚNG như Thắp Sáng: processInitialData bật để dữ liệu
+  // proto v3 đầy đủ, enableExtendedGiftInfo tắt (quà đã có tên + kim cương).
+  const connection = new TikTokLiveConnection(channel.username, {
+    processInitialData: true,
+    enableExtendedGiftInfo: false,
+    ...(EULER_API_KEY ? { signApiKey: EULER_API_KEY } : {}),
+  });
   tik.connection = connection;
-  wireTikTokEvents(connection);
+
+  // Lỗi thư viện báo trong lúc đang nối lần đầu thì fail ngay lập tức
+  // (fail nhanh với đúng lỗi, vd lỗi ký tên 401) thay vì treo 30s.
+  let failConnect = null;
+  const failed = new Promise((_, reject) => {
+    failConnect = reject;
+  });
+  wireTikTokEvents(connection, {
+    onError: (err) => failConnect?.(err),
+  });
+
   let timer = null;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error("CONNECT_TIMEOUT")), 25000);
+    timer = setTimeout(
+      () => reject(new Error("quá 30 giây không vào được phòng live")),
+      30_000,
+    );
   });
   try {
-    const state = await Promise.race([connection.connect(), timeout]);
+    // Chưa LIVE thì thư viện có thể treo mãi ở "Đang kết nối": hỏi TikTok
+    // trước, báo lỗi ngay (cách của Thắp Sáng).
+    const live = await connection.fetchIsLive().catch(() => true);
+    if (!live) {
+      throw new Error(
+        "TikTok báo tài khoản này CHƯA LIVE. Bấm Phát trực tiếp trong LIVE Studio trước rồi mới kết nối",
+      );
+    }
+    const state = await Promise.race([connection.connect(), timeout, failed]);
     if (timer) clearTimeout(timer);
     tik.roomId = state?.roomId ?? null;
     tik.viewerCount =
       typeof state?.viewerCount === "number" ? state.viewerCount : 0;
+    tik.isConnecting = false;
+    tik.error = "";
     await tikSetChannelStatus(channel.id, "connected");
-    tikBroadcast({ type: "status", ...tikStatus() });
+    tikBroadcast("status", tikStatus());
     console.log(`[tiktok] connected to @${channel.username}, room ${tik.roomId}`);
     return { ok: true, roomId: tik.roomId, viewerCount: tik.viewerCount };
   } catch (err) {
     if (timer) clearTimeout(timer);
     tik.reconnectEnabled = false;
+    tik.isConnecting = false;
     tik.roomId = null;
+    tik.error = tikErrMessage(err);
     try {
       connection.disconnect();
     } catch {
       // ignore
     }
+    // Chỉ dọn nếu chưa có lần bấm Kết nối mới hơn thay chỗ (như Thắp Sáng).
     if (tik.connection === connection) tik.connection = null;
     await tikSetChannelStatus(channel.id, "disconnected");
+    tikBroadcast("status", tikStatus());
     throw tikFriendlyError(err, channel.username);
   }
 }
@@ -590,7 +754,7 @@ async function disconnectTikTok() {
   if (channelId) await tikSetChannelStatus(channelId, "disconnected");
   tik.channelId = null;
   tik.username = "";
-  tikBroadcast({ type: "status", ...tikStatus() });
+  tikBroadcast("status", tikStatus());
   return { ok: true };
 }
 
@@ -739,6 +903,11 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/tiktok/status" && req.method === "GET") {
+      sendJson(res, 200, tikStatus());
+      return;
+    }
+
     if (pathname === "/api/tiktok/stream" && req.method === "GET") {
       res.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
@@ -746,13 +915,12 @@ const server = createServer(async (req, res) => {
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       });
-      res.write(
-        `data: ${JSON.stringify({ type: "status", ...tikStatus() })}\n\n`,
-      );
+      // Gửi trạng thái hiện tại ngay khi đăng ký (như Thắp Sáng).
+      res.write(`event: status\ndata: ${JSON.stringify(tikStatus())}\n\n`);
       sseClients.add(res);
       const hb = setInterval(() => {
         try {
-          res.write(": ping\n\n");
+          res.write(": keep-alive\n\n");
         } catch {
           // client gone; close handler cleans up
         }

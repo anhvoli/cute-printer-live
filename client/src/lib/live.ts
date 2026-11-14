@@ -26,6 +26,10 @@ export interface LiveEvent {
   giftEmoji?: string;
   giftImage?: string;
   giftCount?: number;
+  // Giá xu của món quà (1 món, không nhân số lượng) — giọng đọc cảm ơn
+  // dùng để biết quà to hay nhỏ (GiftThanker). Quà thật lấy đúng
+  // diamondCount TikTok báo về; quà giả lập lấy từ GiftDef.coins.
+  giftCoins?: number;
 }
 
 export interface GiftDef {
@@ -34,13 +38,14 @@ export interface GiftDef {
   image: string;
   tier: "NORMAL" | "VIP" | "SUPER VIP";
   boost: number; // hearts the gift adds to the live
+  coins: number; // giá xu 1 món (Rose 1, Finger Heart 5, Doughnut 30, Love you so much 1)
 }
 
 export const GIFTS: GiftDef[] = [
-  { name: "Rose", emoji: "🌹", image: roseImg, tier: "NORMAL", boost: 1 },
-  { name: "Finger Heart", emoji: "🫰", image: fingerHeartImg, tier: "VIP", boost: 5 },
-  { name: "Doughnut", emoji: "🍩", image: doughnutImg, tier: "SUPER VIP", boost: 25 },
-  { name: "Love you so much", emoji: "💖", image: loveYouSoMuchImg, tier: "SUPER VIP", boost: 100 },
+  { name: "Rose", emoji: "🌹", image: roseImg, tier: "NORMAL", boost: 1, coins: 1 },
+  { name: "Finger Heart", emoji: "🫰", image: fingerHeartImg, tier: "VIP", boost: 5, coins: 5 },
+  { name: "Doughnut", emoji: "🍩", image: doughnutImg, tier: "SUPER VIP", boost: 25, coins: 30 },
+  { name: "Love you so much", emoji: "💖", image: loveYouSoMuchImg, tier: "SUPER VIP", boost: 100, coins: 1 },
 ];
 
 export interface Viewer {
@@ -147,6 +152,7 @@ export function eventGift(
   viewer: Viewer,
   gift: GiftDef,
   count: number,
+  coins?: number,
 ): LiveEvent {
   return {
     id: nextId(),
@@ -158,6 +164,7 @@ export function eventGift(
     giftEmoji: gift.emoji,
     giftImage: gift.image,
     giftCount: count,
+    giftCoins: coins ?? gift.coins,
   };
 }
 
@@ -306,6 +313,9 @@ export interface LiveEngine {
   autoProgress: { done: number; total: number } | null;
   enqueue: (ev: LiveEvent | LiveEvent[]) => void;
   setViewers: (n: number) => void; // số người xem thật từ TikTok (SSE)
+  // Số món quà đang chờ in trong hàng đợi — giọng đọc cảm ơn (GiftThanker)
+  // đọc lúc quà được in để biết hàng đợi có đang dài không.
+  giftLinesWaiting: () => number;
   startSim: () => void;
   stopSim: () => void;
   startAuto: (total: number) => void;
@@ -344,6 +354,9 @@ export function useLiveEngine(opts: {
 
   const queueRef = useRef<LiveEvent[]>([]);
   const busyRef = useRef(false);
+  // Số món quà đang chờ in (đã vào hàng đợi, chưa in xong) — GiftThanker
+  // đọc qua giftLinesWaiting() lúc quà được in.
+  const giftWaitingRef = useRef(0);
   const printTimerRef = useRef<number | null>(null);
   const simTimerRef = useRef<number | null>(null);
   const scriptIdxRef = useRef(0);
@@ -375,6 +388,9 @@ export function useLiveEngine(opts: {
     if (busyRef.current) return;
     const next = queueRef.current.shift();
     if (!next) return;
+    if (next.kind === "gift") {
+      giftWaitingRef.current = Math.max(0, giftWaitingRef.current - 1);
+    }
     busyRef.current = true;
     // Commit the row to the paper IMMEDIATELY — the event appears at the
     // top of the paper (and counters/banner update) in the same tick the
@@ -419,11 +435,19 @@ export function useLiveEngine(opts: {
 
   const enqueue = useCallback(
     (ev: LiveEvent | LiveEvent[]) => {
-      if (Array.isArray(ev)) queueRef.current.push(...ev);
-      else queueRef.current.push(ev);
+      const list = Array.isArray(ev) ? ev : [ev];
+      for (const e of list) {
+        if (e.kind === "gift") giftWaitingRef.current += 1;
+      }
+      queueRef.current.push(...list);
       processQueue();
     },
     [processQueue],
+  );
+
+  const giftLinesWaiting = useCallback(
+    () => giftWaitingRef.current,
+    [],
   );
 
   // Số người xem thật do TikTok báo về (sự kiện viewers qua SSE).
@@ -500,6 +524,7 @@ export function useLiveEngine(opts: {
 
   const reset = useCallback(() => {
     queueRef.current = [];
+    giftWaitingRef.current = 0;
     if (printTimerRef.current) window.clearTimeout(printTimerRef.current);
     printTimerRef.current = null;
     busyRef.current = false;
@@ -528,6 +553,7 @@ export function useLiveEngine(opts: {
     autoProgress,
     enqueue,
     setViewers: setViewerCount,
+    giftLinesWaiting,
     startSim: () => setSimRunning(true),
     stopSim: () => setSimRunning(false),
     startAuto,
