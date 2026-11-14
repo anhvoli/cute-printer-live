@@ -1,10 +1,9 @@
 # Cute Printer Live
 
-Game TikTok LIVE: may in mini tai meo de thuong.
-
 Game TikTok LIVE: máy in mini tai mèo dễ thương, viewer tặng quà / comment là
-máy in ra giấy ngay trên sân khấu 9:16. Viết bằng React 19 + TypeScript + Bun,
-chia 2 trang: **Game** (sân khấu) và **Admin** (quản lý kênh TikTok LIVE).
+máy in ra giấy ngay trên sân khấu 9:16. Viết bằng React 19 + TypeScript +
+Node.js + Vite, chia 2 trang: **Game** (sân khấu) và **Admin** (quản lý kênh
+TikTok LIVE).
 
 - **Trang Game (`#/`):** sân khấu 9:16 trên bàn gỗ, máy in trắng-xanh tai mèo
   (nháy mắt, wink khi có quà), banner đen hiện sự kiện live, giấy in cuộn liên
@@ -19,7 +18,7 @@ chia 2 trang: **Game** (sân khấu) và **Admin** (quản lý kênh TikTok LIVE
 
 ## Yêu cầu
 
-- Bun >= 1.3 (cài từ trang chủ Bun)
+- Node.js >= 20 và npm >= 10
 - Git
 
 ## Cài đặt
@@ -33,33 +32,34 @@ cd cute-printer-live
 # xem scripts/download-gift-images.sh)
 bash scripts/download-gift-images.sh
 
-bun install
+npm install
 ```
 
-## Chạy / build
+## Chạy
 
 ```bash
-bun run typecheck       # kiểm tra TypeScript (client + server) — chạy được
-bun run build:server    # build server -> server/dist/actions.js — chạy được
+npm run build   # build client -> client/dist (chỉ cần chạy 1 lần, và sau mỗi lần sửa code)
+npm start       # chạy server ở http://localhost:3000 (đổi cổng bằng PORT=4000 npm start)
 ```
 
-> **Lưu ý quan trọng:** app này được xây làm **Muse space** (Hatch runtime),
-> và em đã kiểm chứng trực tiếp trên bản copy này: `bun install` (79 gói)
-> và `bun run typecheck` chạy ngon, `bun run build:server` build được
-> `server/dist/actions.js`. Nhưng **`bun run build:client` bị SDK chặn** —
-> `buildClient()` của `@hatch/space-sdk` từ chối build tay, bundle client
-> chỉ được tạo bởi trình build của Muse khi artifact được build/publish.
-> Client gọi server qua `@hatch/space-sdk` (xem `package.json` — dependency
-> `file:` trỏ tới SDK trong môi trường Muse) và server actions lưu dữ liệu
-> kênh/cài đặt vào SQLite qua Drizzle (`server/src/actions.ts`,
-> `server/src/schema.ts`, migration trong `drizzle/`). Vì vậy:
+Mở http://localhost:3000 — trang Game mặc định (`#/`), trang Admin ở
+`#/admin`.
+
+Chạy dev (tự reload khi sửa code):
+
+```bash
+npm run dev     # Vite ở http://localhost:5173, API ở http://localhost:3000
+```
+
+> **Dữ liệu lưu ở đâu:** kênh TikTok và cài đặt lưu trong file `data.json`
+> ở thư mục gốc của repo (tự tạo khi có thay đổi đầu tiên, đã cho vào
+> `.gitignore`). Xóa file này là reset về mặc định (kênh trống, chữ cảm ơn
+> "Cảm ơn bạn!", giọng nữ, tốc độ 1x).
 >
-> - **Cách chạy đủ chức năng (khuyến nghị):** chạy bản đã deploy trên Muse —
->   trang Game và trang Admin dùng chung state lưu ở server.
-> - **Chạy local ngoài Muse:** chỉ kiểm tra code và build server được;
->   muốn chạy đủ chức năng cần một host cung cấp endpoint `./actions` +
->   SQLite tương thích với `@hatch/space-sdk` (hiện SDK này chỉ có trong
->   môi trường Muse, và bundle client chỉ build được qua Muse).
+> **Bản chạy trên Muse:** repo này là bản standalone chạy bằng Node.js/npm.
+> Bản gốc chạy trên Muse (Hatch runtime, lưu dữ liệu vào SQLite) vẫn riêng
+> biệt — code tham chiếu của nó nằm ở `server/src/actions.ts`,
+> `server/src/schema.ts` và `drizzle/`, không dùng để chạy bản này.
 
 ## Mở các trang
 
@@ -73,7 +73,7 @@ bun run build:server    # build server -> server/dist/actions.js — chạy đư
 ## Cấu trúc
 
 ```
-client/                 React 19 + Tailwind CSS 4
+client/                 React 19 + Tailwind CSS 4 (build bằng Vite)
   src/App.tsx           Hash routing (#/game, #/admin), state dùng chung
   src/pages/GamePage.tsx    Trang Game — sân khấu máy in
   src/pages/AdminPage.tsx   Trang Admin — quản lý kênh, giọng đọc, giả lập
@@ -81,11 +81,16 @@ client/                 React 19 + Tailwind CSS 4
   src/lib/live.ts       Engine live mô phỏng, bảng quà, hiệu ứng in
   src/assets/           Ảnh thật 4 món quà TikTok (tải bằng script, xem dưới)
 server/
-  src/actions.ts        Server actions: kênh + cài đặt (lưu SQLite)
-  src/schema.ts         Drizzle schema: bảng channels, settings
-drizzle/                SQL migration cho SQLite
+  standalone/server.mjs   Server Node.js: phục vụ client/dist + API /api/actions,
+                          lưu kênh/cài đặt vào data.json (bản standalone)
+  src/actions.ts        Server actions bản Muse (chỉ để tham chiếu, không dùng ở đây)
+  src/schema.ts         Drizzle schema bản Muse (chỉ để tham chiếu)
+drizzle/                SQL migration bản Muse (chỉ để tham chiếu)
 scripts/
   download-gift-images.sh   Tải ảnh quà TikTok từ BeetGames
+  dev.mjs               Chạy Vite dev + API server cùng lúc (npm run dev)
+vite.config.ts          Cấu hình Vite (root client/, proxy /api -> :3000)
+data.json               Kênh + cài đặt đã lưu (tự tạo, không commit)
 ```
 
 ## Ảnh quà TikTok

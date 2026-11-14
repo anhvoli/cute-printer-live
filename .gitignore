@@ -1,6 +1,9 @@
 node_modules/
 dist/
 dist-cvm/
+data.json
+data.json.tmp-*
+screenshots/
 .bun-cache/
 *.tsbuildinfo
 client/.tsbuildinfo*
